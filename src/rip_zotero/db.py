@@ -370,6 +370,19 @@ def save_pdf(item_id: int, data: bytes, storage_dir: Path | None = None) -> Path
     return pdf_path
 
 
+def save_extra_pdf(
+    item_id: int, data: bytes, index: int, storage_dir: Path | None = None
+) -> Path:
+    """Save an additional PDF for an item that already has one (e.g. a book
+    split into per-chapter files). `index` should be unique per item so
+    filenames don't collide with the primary PDF or each other."""
+    storage_dir = storage_dir if storage_dir is not None else APP_STORAGE
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = storage_dir / f"{item_id}_{index}.pdf"
+    pdf_path.write_bytes(data)
+    return pdf_path
+
+
 def migrate_from_zotero(
     zotero_db: Path,
     zotero_storage: Path,

@@ -77,6 +77,7 @@ class VimListView(OptionList):
         Binding("o", "show_detail", "Detail", show=False),
         Binding("e", "edit_item", "Edit"),
         Binding("a", "add_item", "Add"),
+        Binding("p", "add_pdf", "Attach PDF"),
         Binding("d", "delete_item", "Delete"),
         Binding("m", "toggle_manuscript", "Manuscript"),
         Binding("x", "export_bibtex", "Export"),
@@ -99,6 +100,9 @@ class VimListView(OptionList):
 
     def action_add_item(self) -> None:
         self.app.action_add_item()
+
+    def action_add_pdf(self) -> None:
+        self.app.action_add_pdf()
 
     def action_delete_item(self) -> None:
         self.app.action_delete_item()
@@ -293,6 +297,10 @@ HELP_TEXT = f"""\
 [bold {CAT['yellow']}]Items[/bold {CAT['yellow']}]
   e               Edit item (opens $EDITOR)
   a               Add item from BibTeX
+                  (point the PDF prompt at a directory to attach every
+                  PDF inside)
+  p               Attach an additional PDF to an item
+                  (point it at a directory to attach every PDF inside)
   d               Delete item
   m               Add/remove item from a manuscript
 
@@ -732,14 +740,12 @@ class ZoteroApp(App):
     }}
 
     #item-list > .option-list--option-highlighted {{
-        background: {CAT['mauve']};
-        color: {CAT['crust']};
+        background: {CAT['surface1']};
         text-style: bold;
     }}
 
     #item-list:focus > .option-list--option-highlighted {{
-        background: {CAT['mauve']};
-        color: {CAT['crust']};
+        background: {CAT['surface2']};
         text-style: bold;
     }}
 
@@ -1061,7 +1067,8 @@ class ZoteroApp(App):
                 subprocess.call([editor, str(tmp_path)])
                 try:
                     pdf_input = input(
-                        "PDF file path (blank to skip, 'def' = latest ~/Downloads PDF): "
+                        "PDF file or directory (blank to skip, 'def' = latest "
+                        "~/Downloads PDF, a directory attaches every PDF inside): "
                     ).strip()
                 except EOFError:
                     pdf_input = ""
@@ -1092,15 +1099,133 @@ class ZoteroApp(App):
             src = Path(pdf_input).expanduser()
 
         if src is not None:
-            if src.exists():
+            if not src.exists():
+                self.notify(f"Path not found: {src}", severity="warning")
+            elif src.is_dir():
+                files = sorted(src.glob("*.pdf"))
+                if not files:
+                    self.notify(f"No PDFs found in {src}", severity="warning")
+                else:
+                    for i, f in enumerate(files):
+                        data = f.read_bytes()
+                        if i == 0:
+                            pdf_path = db_module.save_pdf(item_id, data)
+                            db_module.update_item_fields(
+                                item_id, {"pdf_path": str(pdf_path)}
+                            )
+                        else:
+                            pdf_path = db_module.save_extra_pdf(item_id, data, i)
+                        db_module.add_item_pdf(
+                            item_id, str(pdf_path), f.stem, sort_order=i
+                        )
+            else:
                 data = src.read_bytes()
                 pdf_path = db_module.save_pdf(item_id, data)
                 db_module.update_item_fields(item_id, {"pdf_path": str(pdf_path)})
-            else:
-                self.notify(f"PDF not found: {src}", severity="warning")
 
         self._set_status(f"Added: {fields['title']}")
         self._load_library()
+
+    def action_add_pdf(self) -> None:
+        lv = self.query_one("#item-list", VimListView)
+        idx = lv.highlighted
+        if idx is None or not (0 <= idx < len(self._filtered)):
+            return
+        item = self._filtered[idx]
+
+        pdf_input = ""
+        label = ""
+        try:
+            with self.suspend():
+                try:
+                    pdf_input = input(
+                        f"PDF file or directory to attach to '{item.title}' "
+                        "(blank to cancel, 'def' = latest ~/Downloads PDF, "
+                        "a directory attaches every PDF inside): "
+                    ).strip()
+                    src_is_dir = (
+                        pdf_input
+                        and pdf_input.lower() != "def"
+                        and Path(pdf_input).expanduser().is_dir()
+                    )
+                    if pdf_input and not src_is_dir:
+                        label = input(
+                            "Label for this PDF (blank = filename): "
+                        ).strip()
+                except EOFError:
+                    pdf_input = ""
+        except SuspendNotSupported:
+            self.notify(
+                "Attaching PDFs isn't supported in this terminal environment",
+                severity="error",
+            )
+            return
+
+        if not pdf_input:
+            self._set_status("Cancelled")
+            return
+
+        if pdf_input.lower() == "def":
+            src = _latest_download_pdf()
+            if src is None:
+                self.notify("No PDF found in ~/Downloads", severity="warning")
+                return
+            sources = [(src, label)]
+        else:
+            src = Path(pdf_input).expanduser()
+            if not src.exists():
+                self.notify(f"Path not found: {src}", severity="warning")
+                return
+            if src.is_dir():
+                files = sorted(src.glob("*.pdf"))
+                if not files:
+                    self.notify(f"No PDFs found in {src}", severity="warning")
+                    return
+                sources = [(f, f.stem) for f in files]
+            else:
+                sources = [(src, label)]
+
+        existing = db_module.list_item_pdfs(item.item_id)
+        if not existing and item.has_pdf:
+            # First extra PDF for an item that only has the single legacy
+            # pdf_path — seed item_pdfs with it so it's included in the list.
+            db_module.add_item_pdf(
+                item.item_id, str(item.pdf_path), None, sort_order=0
+            )
+            existing = db_module.list_item_pdfs(item.item_id)
+
+        next_index = len(existing)
+        attached_names: list[str] = []
+        first_dest: Path | None = None
+        for file_src, file_label in sources:
+            if not file_src.exists():
+                self.notify(f"PDF not found: {file_src}", severity="warning")
+                continue
+            data = file_src.read_bytes()
+            dest = db_module.save_extra_pdf(item.item_id, data, next_index)
+            db_module.add_item_pdf(
+                item.item_id, str(dest), file_label or None, sort_order=next_index
+            )
+            attached_names.append(file_label or dest.name)
+            first_dest = first_dest or dest
+            next_index += 1
+
+        if not attached_names:
+            self._set_status("Nothing attached")
+            return
+
+        if not item.has_pdf and first_dest is not None:
+            db_module.update_item_fields(item.item_id, {"pdf_path": str(first_dest)})
+            item.pdf_path = first_dest
+            lv.replace_option_prompt_at_index(idx, item.list_markup())
+
+        if len(attached_names) == 1:
+            self._set_status(f"Attached: {attached_names[0]} -> {item.title}")
+        else:
+            self._set_status(
+                f"Attached {len(attached_names)} PDFs -> {item.title}"
+            )
+        self._show_detail(item)
 
     def action_delete_item(self) -> None:
         lv = self.query_one("#item-list", VimListView)
