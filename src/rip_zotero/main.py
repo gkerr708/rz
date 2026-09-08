@@ -731,6 +731,18 @@ class ZoteroApp(App):
         border: tall {CAT['mauve']};
     }}
 
+    #item-list > .option-list--option-highlighted {{
+        background: {CAT['mauve']};
+        color: {CAT['crust']};
+        text-style: bold;
+    }}
+
+    #item-list:focus > .option-list--option-highlighted {{
+        background: {CAT['mauve']};
+        color: {CAT['crust']};
+        text-style: bold;
+    }}
+
     #detail-panel {{
         width: 1fr;
         border: tall {CAT['surface2']};
