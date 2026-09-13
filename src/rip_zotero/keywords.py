@@ -29,6 +29,14 @@ def load_keywords() -> set[str]:
     return keywords
 
 
+def add_keyword(name: str) -> None:
+    ensure_keywords_file()
+    if name in load_keywords():
+        return
+    with KEYWORDS_FILE.open("a") as f:
+        f.write(f"{name}\n")
+
+
 def unknown_tags(tags_str: str | None) -> list[str]:
     """Return the tags in tags_str that aren't in the controlled keyword list."""
     if not tags_str:

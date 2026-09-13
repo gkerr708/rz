@@ -69,9 +69,24 @@ def init_db(db_path: Path | None = None) -> None:
             )
             """
         )
+        # Renamed from manuscripts/manuscript_items -> projects/project_items.
+        # Migrate any existing tables/columns in place so old data survives.
+        try:
+            con.execute("ALTER TABLE manuscripts RENAME TO projects")
+        except sqlite3.OperationalError:
+            pass  # already renamed, or fresh DB
+        try:
+            con.execute("ALTER TABLE manuscript_items RENAME TO project_items")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            con.execute("ALTER TABLE project_items RENAME COLUMN manuscript_id TO project_id")
+        except sqlite3.OperationalError:
+            pass
+
         con.execute(
             """
-            CREATE TABLE IF NOT EXISTS manuscripts (
+            CREATE TABLE IF NOT EXISTS projects (
                 id INTEGER PRIMARY KEY,
                 name TEXT UNIQUE NOT NULL,
                 created_at TEXT NOT NULL
@@ -80,10 +95,10 @@ def init_db(db_path: Path | None = None) -> None:
         )
         con.execute(
             """
-            CREATE TABLE IF NOT EXISTS manuscript_items (
-                manuscript_id INTEGER NOT NULL REFERENCES manuscripts(id) ON DELETE CASCADE,
+            CREATE TABLE IF NOT EXISTS project_items (
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-                PRIMARY KEY (manuscript_id, item_id)
+                PRIMARY KEY (project_id, item_id)
             )
             """
         )
@@ -98,6 +113,33 @@ def init_db(db_path: Path | None = None) -> None:
             )
             """
         )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS authors (
+                id INTEGER PRIMARY KEY,
+                last_key TEXT NOT NULL,
+                first_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                email TEXT,
+                lab TEXT,
+                department TEXT,
+                university TEXT,
+                location TEXT,
+                urls TEXT,
+                research_areas TEXT,
+                notes TEXT,
+                UNIQUE(last_key, first_key)
+            )
+            """
+        )
+        try:
+            con.execute("ALTER TABLE items ADD COLUMN to_read INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        try:
+            con.execute("ALTER TABLE authors ADD COLUMN canonical_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         con.commit()
     finally:
         con.close()
@@ -140,22 +182,22 @@ def add_item_pdf(
         con.close()
 
 
-def list_manuscripts(db_path: Path | None = None) -> list[str]:
+def list_projects(db_path: Path | None = None) -> list[str]:
     db_path = db_path if db_path is not None else APP_DB
     if not db_path.exists():
         return []
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        rows = con.execute("SELECT name FROM manuscripts ORDER BY name").fetchall()
+        rows = con.execute("SELECT name FROM projects ORDER BY name").fetchall()
     finally:
         con.close()
     return [r[0] for r in rows]
 
 
-def toggle_manuscript_item(
-    manuscript_name: str, item_id: int, db_path: Path | None = None
+def toggle_project_item(
+    project_name: str, item_id: int, db_path: Path | None = None
 ) -> bool:
-    """Add item_id to manuscript_name if absent, else remove it.
+    """Add item_id to project_name if absent, else remove it.
 
     Returns True if the item was added, False if it was removed.
     """
@@ -167,39 +209,37 @@ def toggle_manuscript_item(
         con.execute("PRAGMA foreign_keys = ON")
         with con:
             row = con.execute(
-                "SELECT id FROM manuscripts WHERE name = ?", (manuscript_name,)
+                "SELECT id FROM projects WHERE name = ?", (project_name,)
             ).fetchone()
             if row is None:
-                manuscript_id = con.execute(
-                    "INSERT INTO manuscripts (name, created_at) VALUES (?, datetime('now'))",
-                    (manuscript_name,),
+                project_id = con.execute(
+                    "INSERT INTO projects (name, created_at) VALUES (?, datetime('now'))",
+                    (project_name,),
                 ).lastrowid
             else:
-                manuscript_id = row[0]
+                project_id = row[0]
 
             exists = con.execute(
-                "SELECT 1 FROM manuscript_items WHERE manuscript_id = ? AND item_id = ?",
-                (manuscript_id, item_id),
+                "SELECT 1 FROM project_items WHERE project_id = ? AND item_id = ?",
+                (project_id, item_id),
             ).fetchone()
             if exists:
                 con.execute(
-                    "DELETE FROM manuscript_items WHERE manuscript_id = ? AND item_id = ?",
-                    (manuscript_id, item_id),
+                    "DELETE FROM project_items WHERE project_id = ? AND item_id = ?",
+                    (project_id, item_id),
                 )
                 return False
             else:
                 con.execute(
-                    "INSERT INTO manuscript_items (manuscript_id, item_id) VALUES (?, ?)",
-                    (manuscript_id, item_id),
+                    "INSERT INTO project_items (project_id, item_id) VALUES (?, ?)",
+                    (project_id, item_id),
                 )
                 return True
     finally:
         con.close()
 
 
-def manuscript_item_ids(
-    manuscript_name: str, db_path: Path | None = None
-) -> set[int]:
+def project_item_ids(project_name: str, db_path: Path | None = None) -> set[int]:
     db_path = db_path if db_path is not None else APP_DB
     if not db_path.exists():
         return set()
@@ -207,19 +247,19 @@ def manuscript_item_ids(
     try:
         rows = con.execute(
             """
-            SELECT mi.item_id
-            FROM manuscript_items mi
-            JOIN manuscripts m ON mi.manuscript_id = m.id
-            WHERE m.name = ?
+            SELECT pi.item_id
+            FROM project_items pi
+            JOIN projects p ON pi.project_id = p.id
+            WHERE p.name = ?
             """,
-            (manuscript_name,),
+            (project_name,),
         ).fetchall()
     finally:
         con.close()
     return {r[0] for r in rows}
 
 
-def manuscripts_for_item(item_id: int, db_path: Path | None = None) -> list[str]:
+def projects_for_item(item_id: int, db_path: Path | None = None) -> list[str]:
     db_path = db_path if db_path is not None else APP_DB
     if not db_path.exists():
         return []
@@ -227,17 +267,159 @@ def manuscripts_for_item(item_id: int, db_path: Path | None = None) -> list[str]
     try:
         rows = con.execute(
             """
-            SELECT m.name
-            FROM manuscript_items mi
-            JOIN manuscripts m ON mi.manuscript_id = m.id
-            WHERE mi.item_id = ?
-            ORDER BY m.name
+            SELECT p.name
+            FROM project_items pi
+            JOIN projects p ON pi.project_id = p.id
+            WHERE pi.item_id = ?
+            ORDER BY p.name
             """,
             (item_id,),
         ).fetchall()
     finally:
         con.close()
     return [r[0] for r in rows]
+
+
+def cleanup_projects(valid_names: set[str], db_path: Path | None = None) -> int:
+    """Delete any project (and its item associations, via cascade) whose name
+    isn't in valid_names. Returns the number of projects removed."""
+    db_path = db_path if db_path is not None else APP_DB
+    con = sqlite3.connect(str(db_path), timeout=1)
+    removed = 0
+    try:
+        con.execute("PRAGMA busy_timeout = 1000")
+        con.execute("PRAGMA foreign_keys = ON")
+        with con:
+            rows = con.execute("SELECT id, name FROM projects").fetchall()
+            for project_id, name in rows:
+                if name not in valid_names:
+                    con.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+                    removed += 1
+    finally:
+        con.close()
+    return removed
+
+
+def rename_project(old_name: str, new_name: str, db_path: Path | None = None) -> int:
+    """Rename a project. If new_name already names a different existing
+    project, merge old_name's papers into it instead (dropping duplicates)
+    rather than failing on the UNIQUE constraint. Returns the number of
+    paper associations moved/renamed (0 if old_name doesn't exist)."""
+    db_path = db_path if db_path is not None else APP_DB
+    con = sqlite3.connect(str(db_path), timeout=1)
+    try:
+        con.execute("PRAGMA busy_timeout = 1000")
+        con.execute("PRAGMA foreign_keys = ON")
+        with con:
+            old_row = con.execute(
+                "SELECT id FROM projects WHERE name = ?", (old_name,)
+            ).fetchone()
+            if old_row is None:
+                return 0
+            old_id = old_row[0]
+
+            new_row = con.execute(
+                "SELECT id FROM projects WHERE name = ?", (new_name,)
+            ).fetchone()
+            if new_row is None:
+                con.execute("UPDATE projects SET name = ? WHERE id = ?", (new_name, old_id))
+                return 1
+
+            new_id = new_row[0]
+            item_rows = con.execute(
+                "SELECT item_id FROM project_items WHERE project_id = ?", (old_id,)
+            ).fetchall()
+            for (item_id,) in item_rows:
+                con.execute(
+                    "INSERT OR IGNORE INTO project_items (project_id, item_id) VALUES (?, ?)",
+                    (new_id, item_id),
+                )
+            con.execute("DELETE FROM projects WHERE id = ?", (old_id,))
+            return len(item_rows)
+    finally:
+        con.close()
+
+
+def ensure_authors(
+    entries: list[tuple[tuple[str, str], str]],
+    seed: dict[tuple[str, str], dict] | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Make sure every (name_key, display_name) in entries has a row in
+    authors, inserting any that are missing. A new row is pre-filled from
+    seed[key] (rolodex.toml's one-time seed data) when available; rows that
+    already exist are left untouched, so later edits are never overwritten."""
+    db_path = db_path if db_path is not None else APP_DB
+    init_db(db_path)
+    seed = seed or {}
+    con = sqlite3.connect(str(db_path), timeout=1)
+    try:
+        con.execute("PRAGMA busy_timeout = 1000")
+        with con:
+            for key, display_name in entries:
+                last_key, first_key = key
+                exists = con.execute(
+                    "SELECT 1 FROM authors WHERE last_key = ? AND first_key = ?",
+                    (last_key, first_key),
+                ).fetchone()
+                if exists:
+                    continue
+                info = seed.get(key, {})
+                con.execute(
+                    """
+                    INSERT INTO authors
+                        (last_key, first_key, name, email, lab, department,
+                         university, location, urls, research_areas, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        last_key,
+                        first_key,
+                        info.get("name") or display_name,
+                        info.get("email"),
+                        info.get("lab"),
+                        info.get("department"),
+                        info.get("university"),
+                        info.get("location"),
+                        "; ".join(info.get("urls", [])) or None,
+                        "; ".join(info.get("research_areas", [])) or None,
+                        info.get("notes"),
+                    ),
+                )
+    finally:
+        con.close()
+
+
+def list_authors(db_path: Path | None = None) -> list[dict]:
+    db_path = db_path if db_path is not None else APP_DB
+    if not db_path.exists():
+        return []
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute("SELECT * FROM authors").fetchall()
+    finally:
+        con.close()
+    return [dict(r) for r in rows]
+
+
+def update_author_fields(
+    author_id: int, changes: dict[str, str | None], db_path: Path | None = None
+) -> None:
+    if not changes:
+        return
+    db_path = db_path if db_path is not None else APP_DB
+    con = sqlite3.connect(str(db_path), timeout=1)
+    try:
+        con.execute("PRAGMA busy_timeout = 1000")
+        set_clause = ", ".join(f"{col} = ?" for col in changes)
+        with con:
+            con.execute(
+                f"UPDATE authors SET {set_clause} WHERE id = ?",
+                [*changes.values(), author_id],
+            )
+    finally:
+        con.close()
 
 
 def load_items(db_path: Path | None = None) -> list["ZoteroItem"]:
@@ -264,6 +446,7 @@ def load_items(db_path: Path | None = None) -> list["ZoteroItem"]:
                 item_id=row["id"],
                 pdf_path=Path(pdf_path) if pdf_path else None,
                 date_added=row["date_added"],
+                to_read=bool(row["to_read"]),
                 **kwargs,
             )
         )
@@ -336,6 +519,40 @@ def cleanup_tags(valid_keywords: set[str], db_path: Path | None = None) -> int:
     return changed
 
 
+def rename_tag(old_name: str, new_name: str, db_path: Path | None = None) -> int:
+    """Rename old_name to new_name on every item that has it, de-duplicating
+    if new_name is already present too. Returns the number of items changed."""
+    db_path = db_path if db_path is not None else APP_DB
+    con = sqlite3.connect(str(db_path), timeout=1)
+    changed = 0
+    try:
+        con.execute("PRAGMA busy_timeout = 1000")
+        with con:
+            rows = con.execute(
+                "SELECT id, tags FROM items WHERE tags IS NOT NULL AND tags != ''"
+            ).fetchall()
+            for item_id, tags in rows:
+                current = [t.strip() for t in tags.split(";") if t.strip()]
+                if old_name not in current:
+                    continue
+                updated = [new_name if t == old_name else t for t in current]
+                seen: set[str] = set()
+                deduped = []
+                for t in updated:
+                    if t not in seen:
+                        deduped.append(t)
+                        seen.add(t)
+                con.execute(
+                    "UPDATE items SET tags = ? WHERE id = ?",
+                    ("; ".join(deduped) or None, item_id),
+                )
+                changed += 1
+    finally:
+        con.close()
+    return changed
+    return changed
+
+
 def delete_item(item_id: int, db_path: Path | None = None) -> None:
     db_path = db_path if db_path is not None else APP_DB
     con = sqlite3.connect(str(db_path), timeout=1)
@@ -350,7 +567,7 @@ def delete_item(item_id: int, db_path: Path | None = None) -> None:
             ).fetchall()
             con.execute("DELETE FROM item_pdfs WHERE item_id = ?", (item_id,))
             con.execute(
-                "DELETE FROM manuscript_items WHERE item_id = ?", (item_id,)
+                "DELETE FROM project_items WHERE item_id = ?", (item_id,)
             )
             con.execute("DELETE FROM items WHERE id = ?", (item_id,))
     finally:
