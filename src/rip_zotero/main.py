@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import os
 import re
@@ -13,8 +13,10 @@ import pandas as pd
 from rich.markup import escape
 from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
+from textual.color import Color
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen
+from textual.theme import BUILTIN_THEMES, Theme
 from textual.widgets import Footer, Header, Input, OptionList, Static
 from textual.widgets.option_list import Option
 from textual import work
@@ -43,35 +45,81 @@ from rip_zotero.projects import (
     PROJECTS_FILE,
 )
 
-# Catppuccin Mocha
-CAT = {
-    "rosewater": "#f5e0dc",
-    "flamingo": "#f2cdcd",
-    "pink": "#f5c2e7",
-    "mauve": "#cba6f7",
-    "red": "#f38ba8",
-    "maroon": "#eba0ac",
-    "peach": "#fab387",
-    "yellow": "#f9e2af",
-    "green": "#a6e3a1",
-    "teal": "#94e2d5",
-    "sky": "#89dceb",
-    "sapphire": "#74c7ec",
-    "blue": "#89b4fa",
-    "lavender": "#b4befe",
-    "text": "#cdd6f4",
-    "subtext1": "#bac2de",
-    "subtext0": "#a6adc8",
-    "overlay2": "#9399b2",
-    "overlay1": "#7f849c",
-    "overlay0": "#6c7086",
-    "surface2": "#585b70",
-    "surface1": "#45475a",
-    "surface0": "#313244",
-    "base": "#1e1e2e",
-    "mantle": "#181825",
-    "crust": "#11111b",
-}
+DEFAULT_THEME_NAME = "rose-pine-black"
+# Rose Pine with a true black backdrop instead of its stock deep-purple
+# background/surface/panel — including the footer bar and pane borders, which
+# Textual sources from the theme's `variables` overrides rather than its
+# background/surface/panel fields.
+ROSE_PINE_BLACK = replace(
+    BUILTIN_THEMES["rose-pine"],
+    name=DEFAULT_THEME_NAME,
+    background="#000000",
+    surface="#000000",
+    panel="#000000",
+    variables={
+        **BUILTIN_THEMES["rose-pine"].variables,
+        "footer-background": "#000000",
+        "border-blurred": "#ffffff",
+    },
+)
+
+
+def _build_palette(theme: Theme) -> dict[str, str]:
+    """Derive a Catppuccin-shaped color palette from any Textual `Theme`.
+
+    Item-list/detail-panel text is colored via Rich markup, which can't read
+    Textual's `$primary`/`$text` CSS variables directly, so this resolves the
+    same handful of semantic roles (accent, success, muted text, …) to real
+    hex values whenever the app's theme changes, keeping that markup in sync.
+    """
+    primary = Color.parse(theme.primary)
+    secondary = Color.parse(theme.secondary or theme.primary)
+    warning = Color.parse(theme.warning or theme.accent or theme.primary)
+    error = Color.parse(theme.error or theme.primary)
+    success = Color.parse(theme.success or theme.secondary or theme.primary)
+    accent = Color.parse(theme.accent or theme.primary)
+    foreground = Color.parse(theme.foreground or "#e0e0e0")
+    background = Color.parse(theme.background or "#1e1e1e")
+    panel = Color.parse(theme.panel or theme.surface or theme.background or "#1e1e1e")
+    black = Color.parse("#000000")
+
+    def mix(a: Color, b: Color, factor: float) -> str:
+        return a.blend(b, factor).hex
+
+    return {
+        "rosewater": accent.hex,
+        "flamingo": accent.hex,
+        "pink": accent.hex,
+        "mauve": primary.hex,
+        "red": error.hex,
+        "maroon": error.hex,
+        "peach": warning.hex,
+        "yellow": warning.hex,
+        "green": success.hex,
+        "teal": secondary.hex,
+        "sky": secondary.hex,
+        "sapphire": secondary.hex,
+        "blue": secondary.hex,
+        "lavender": primary.hex,
+        "text": foreground.hex,
+        "subtext1": mix(foreground, background, 0.25),
+        "subtext0": mix(foreground, background, 0.45),
+        "overlay2": mix(foreground, background, 0.55),
+        "overlay1": mix(foreground, background, 0.65),
+        "overlay0": mix(foreground, background, 0.75),
+        "surface2": mix(panel, foreground, 0.15),
+        "surface1": panel.hex,
+        "surface0": mix(panel, background, 0.5),
+        "base": background.hex,
+        "mantle": mix(background, black, 0.15),
+        "crust": mix(background, black, 0.3),
+    }
+
+
+# Mutated in place (never reassigned) so every f-string that already holds a
+# reference to this dict — help text, list rows, detail panels — picks up a
+# new theme's colors as soon as `ZoteroApp.watch_theme` updates it.
+CAT = _build_palette(ROSE_PINE_BLACK)
 
 
 class VimListView(OptionList):
@@ -202,22 +250,22 @@ class FilterPicker(ModalScreen[list[tuple[str, str]] | None]):
         Binding("shift+tab", "focus_list", "Navigate", show=False),
     ]
 
-    CSS = f"""
-    FilterPicker {{
+    CSS = """
+    FilterPicker {
         align: center middle;
-    }}
-    #filter-box {{
+    }
+    #filter-box {
         width: 50;
         height: auto;
         max-height: 80%;
-        border: tall {CAT['mauve']};
-        background: {CAT['base']};
-        color: {CAT['text']};
-    }}
-    #filter-hint {{
-        color: {CAT['overlay1']};
+        border: round #9ccfd8;
+        background: $panel;
+        color: $text;
+    }
+    #filter-hint {
+        color: $text-muted;
         margin: 0 1;
-    }}
+    }
     """
 
     def __init__(self, active_filters: list[tuple[str, str]], initial_query: str = "") -> None:
@@ -368,22 +416,22 @@ class NamePickerScreen(ModalScreen[list[str] | None]):
         Binding("shift+tab", "focus_list", "Navigate", show=False),
     ]
 
-    CSS = f"""
-    NamePickerScreen {{
+    CSS = """
+    NamePickerScreen {
         align: center middle;
-    }}
-    #picker-box {{
+    }
+    #picker-box {
         width: 50;
         height: auto;
         max-height: 80%;
-        border: tall {CAT['mauve']};
-        background: {CAT['base']};
-        color: {CAT['text']};
-    }}
-    #picker-hint {{
-        color: {CAT['overlay1']};
+        border: round #9ccfd8;
+        background: $panel;
+        color: $text;
+    }
+    #picker-hint {
+        color: $text-muted;
         margin: 0 1;
-    }}
+    }
     """
 
     def __init__(self, label: str, known: set[str], current: set[str]) -> None:
@@ -506,7 +554,8 @@ class NamePickerScreen(ModalScreen[list[str] | None]):
         self.dismiss(sorted(self._pending))
 
 
-HELP_TEXT = f"""\
+def _help_text() -> str:
+    return f"""\
 [bold {CAT['yellow']}]Navigation[/bold {CAT['yellow']}]
   j / down        Move down
   k / up          Move up
@@ -573,25 +622,25 @@ Press any key to close.
 
 
 class HelpScreen(ModalScreen[None]):
-    CSS = f"""
-    HelpScreen {{
+    CSS = """
+    HelpScreen {
         align: center middle;
-    }}
-    #help-box {{
+    }
+    #help-box {
         width: 86;
         max-width: 95%;
         height: auto;
         max-height: 80%;
-        border: tall {CAT['mauve']};
-        background: {CAT['base']};
-        color: {CAT['text']};
+        border: round #9ccfd8;
+        background: $panel;
+        color: $text;
         padding: 1 2;
-    }}
+    }
     """
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="help-box"):
-            yield Static(HELP_TEXT)
+            yield Static(_help_text())
 
     def on_key(self, event) -> None:
         if event.key == "j":
@@ -1385,66 +1434,68 @@ class ZoteroApp(App):
     TITLE = "Zotero TUI"
     SUB_TITLE = "Loading..."
 
-    CSS = f"""
-    Screen {{
-        background: {CAT['base']};
-    }}
+    CSS = """
+    Screen {
+        background: $background;
+    }
 
-    #search {{
+    #search {
         margin: 1 1 0 1;
-        border: tall {CAT['surface2']};
-        background: {CAT['base']};
-        color: {CAT['text']};
-    }}
+        border: round white;
+        background: $background;
+        color: $text;
+    }
 
-    #search:focus {{
-        border: tall {CAT['mauve']};
-    }}
+    #search:focus {
+        border: round #9ccfd8;
+        background-tint: $background 0%;
+    }
 
-    #main {{
+    #main {
         height: 1fr;
         margin: 0 1 0 1;
-    }}
+    }
 
-    #item-list {{
+    #item-list {
         width: 55%;
-        border: tall {CAT['surface2']};
-        background: {CAT['base']};
-        color: {CAT['text']};
-    }}
+        border: round white;
+        background: $background;
+        color: $text;
+    }
 
-    #item-list:focus {{
-        border: tall {CAT['mauve']};
-    }}
+    #item-list:focus {
+        border: round #9ccfd8;
+        background-tint: $background 0%;
+    }
 
-    #item-list > .option-list--option-highlighted {{
-        background: {CAT['surface1']};
+    #item-list > .option-list--option-highlighted {
+        background: #333333;
         text-style: bold;
-    }}
+    }
 
-    #item-list:focus > .option-list--option-highlighted {{
-        background: {CAT['surface2']};
+    #item-list:focus > .option-list--option-highlighted {
+        background: #555555;
         text-style: bold;
-    }}
+    }
 
-    #detail-panel {{
+    #detail-panel {
         width: 1fr;
-        border: tall {CAT['surface2']};
-        background: {CAT['base']};
-        color: {CAT['text']};
-    }}
+        border: round white;
+        background: $background;
+        color: $text;
+    }
 
-    #detail-text {{
+    #detail-text {
         height: auto;
         padding: 1 2;
-    }}
+    }
 
-    #status {{
+    #status {
         height: 1;
-        background: {CAT['surface1']};
-        color: {CAT['subtext0']};
+        background: $panel;
+        color: $text-muted;
         padding: 0 2;
-    }}
+    }
     """
 
     BINDINGS = [
@@ -1460,6 +1511,8 @@ class ZoteroApp(App):
 
     def __init__(self) -> None:
         super().__init__()
+        self.register_theme(ROSE_PINE_BLACK)
+        self.theme = DEFAULT_THEME_NAME
         self._items: list[ZoteroItem] = []
         self._filtered: list[ZoteroItem] = []
         self._search_timer = None
@@ -1485,6 +1538,22 @@ class ZoteroApp(App):
     def on_mount(self) -> None:
         self._load_library()
         self.query_one("#item-list", VimListView).focus()
+
+    def watch_theme(self, theme_name: str) -> None:
+        theme = self.get_theme(theme_name)
+        if theme is None:
+            return
+        CAT.clear()
+        CAT.update(_build_palette(theme))
+        if not getattr(self, "_running", False):
+            return
+        try:
+            if self._mode == "authors":
+                self._rebuild_author_list()
+            else:
+                self._rebuild_list()
+        except Exception:
+            pass
 
     @work(thread=True, exclusive=True)
     def _load_library(self) -> None:
