@@ -39,6 +39,7 @@ EDITABLE_FIELDS: list[str] = [
     "rights",
     "extra",
     "access_date",
+    "summary",
     "abstract",
     "tags",
 ]

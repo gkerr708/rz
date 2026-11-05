@@ -3,9 +3,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 import os
 import re
+import shutil
 import subprocess
 import sqlite3
 import tempfile
+import textwrap
 import tomllib
 import webbrowser
 import pandas as pd
@@ -14,7 +16,8 @@ from rich.markup import escape
 from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.color import Color
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from datetime import date as _date
 from textual.screen import ModalScreen
 from textual.theme import BUILTIN_THEMES, Theme
 from textual.widgets import Footer, Header, Input, OptionList, Static
@@ -137,6 +140,7 @@ class VimListView(OptionList):
         Binding("t", "toggle_tag", "Tag", show=False),
         Binding("c", "show_paper_authors", "Authors", show=False),
         Binding("x", "copy_bibtex", "Copy BibTeX", show=False),
+        Binding("y", "copy_pdf_path", "Copy PDF path", show=False),
         Binding("X", "export_bibtex", "Export All", show=False),
         Binding("K", "edit_keywords", "Keywords", show=False),
         Binding("M", "edit_projects", "Projects", show=False),
@@ -144,6 +148,10 @@ class VimListView(OptionList):
         Binding("w", "open_website", "Website", show=False),
         Binding("r", "toggle_read", "Reading Queue", show=False),
         Binding("R", "toggle_queue_filter", "Queue", show=False),
+        Binding("space", "mark_item", "Mark", show=False),
+        Binding("S", "share_marked", "Share", show=False),
+        Binding("U", "clear_marks", "Unmark all", show=False),
+        Binding("l", "focus_detail", "Read detail", show=False),
         Binding("enter", "activate", "Open PDF / Back to Papers", show=True),
     ]
 
@@ -183,6 +191,21 @@ class VimListView(OptionList):
     def action_copy_bibtex(self) -> None:
         self.app.action_copy_bibtex()
 
+    def action_copy_pdf_path(self) -> None:
+        self.app.action_copy_pdf_path()
+
+    def action_mark_item(self) -> None:
+        self.app.action_mark_item()
+
+    def action_share_marked(self) -> None:
+        self.app.action_share_marked()
+
+    def action_clear_marks(self) -> None:
+        self.app.action_clear_marks()
+
+    def action_focus_detail(self) -> None:
+        self.app.query_one("#detail-panel").focus()
+
     def action_edit_keywords(self) -> None:
         self.app.action_edit_keywords()
 
@@ -215,6 +238,10 @@ class VimListView(OptionList):
         "show_paper_authors",
         "export_bibtex",
         "copy_bibtex",
+        "copy_pdf_path",
+        "mark_item",
+        "share_marked",
+        "clear_marks",
         "open_filter",
         "toggle_read",
         "toggle_queue_filter",
@@ -230,6 +257,24 @@ class VimListView(OptionList):
         return True
 
 
+class DetailPanel(VerticalScroll):
+    """Right-hand detail panel. Press l in the list to focus it, then j/k
+    scroll; h, q or Esc go back to the list (without clearing filters)."""
+
+    BINDINGS = [
+        Binding("j,down", "scroll_down", "Down", show=False),
+        Binding("k,up", "scroll_up", "Up", show=False),
+        Binding("ctrl+d,space", "page_down", "Page down", show=False),
+        Binding("ctrl+u", "page_up", "Page up", show=False),
+        Binding("g", "scroll_home", "Top", show=False),
+        Binding("G", "scroll_end", "Bottom", show=False),
+        Binding("h,q,escape", "back_to_list", "Back to list", show=True),
+    ]
+
+    def action_back_to_list(self) -> None:
+        self.app.query_one("#item-list").focus()
+
+
 class SearchInput(Input):
     BINDINGS = [
         Binding("shift+tab", "open_filter_from_search", "Filter", show=False),
@@ -237,6 +282,17 @@ class SearchInput(Input):
 
     def action_open_filter_from_search(self) -> None:
         self.app.action_open_filter_from_search()
+
+
+class PickerOptionList(OptionList):
+    """Option list used inside the tag/project/filter pickers: Space marks the
+    highlighted entry and / jumps back to the search box. These keys are bound
+    here (not on the screen) so they still type normally in the search box."""
+
+    BINDINGS = [
+        Binding("space", "screen.toggle", "Mark", show=False),
+        Binding("slash", "screen.focus_search", "Search", show=False),
+    ]
 
 
 class FilterPicker(ModalScreen[list[tuple[str, str]] | None]):
@@ -262,9 +318,28 @@ class FilterPicker(ModalScreen[list[tuple[str, str]] | None]):
         background: $panel;
         color: $text;
     }
+    /* Pinned to the bottom of the box so it never scrolls out of view;
+       the option list scrolls on its own between the input and the hint. */
     #filter-hint {
+        dock: bottom;
+        height: auto;
         color: $text-muted;
         margin: 0 1;
+    }
+    #filter-options {
+        height: 1fr;
+    }
+    /* Neutral highlight (same as the main list): the theme's default block
+       cursor is $primary, which hides names that are colored with $primary. */
+    #filter-options > .option-list--option-highlighted {
+        color: $foreground;
+        background: #333333;
+        text-style: bold;
+    }
+    #filter-options:focus > .option-list--option-highlighted {
+        color: $foreground;
+        background: #555555;
+        text-style: bold;
     }
     """
 
@@ -275,11 +350,11 @@ class FilterPicker(ModalScreen[list[tuple[str, str]] | None]):
         self._initial_query = initial_query
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="filter-box"):
+        with Vertical(id="filter-box"):
             yield Input(placeholder="Type to filter…", id="filter-input")
-            yield OptionList(id="filter-options")
+            yield PickerOptionList(id="filter-options")
             yield Static(
-                "Enter (search): jump to list · Enter/Tab (list): mark · q/Esc: apply",
+                "Enter: jump to list · Space/Enter: mark · /: search again · q/Esc: apply",
                 id="filter-hint",
             )
 
@@ -293,6 +368,12 @@ class FilterPicker(ModalScreen[list[tuple[str, str]] | None]):
         input_widget.value = self._initial_query
         self._render_options(self._initial_query)
         input_widget.focus()
+
+    def action_focus_search(self) -> None:
+        inp = self.query_one("#filter-input", Input)
+        inp.focus()
+        # Select the old query so typing the next search replaces it.
+        inp.select_all()
 
     def action_focus_list(self) -> None:
         ol = self.query_one("#filter-options", OptionList)
@@ -371,7 +452,8 @@ class FilterPicker(ModalScreen[list[tuple[str, str]] | None]):
                 self._selected.add(key)
 
         preserve = None if option_id == "clear" else option_id
-        self._render_options(self._initial_query, preserve_id=preserve)
+        query = self.query_one("#filter-input", Input).value
+        self._render_options(query, preserve_id=preserve)
 
     def action_finish(self) -> None:
         self.dismiss(sorted(self._selected))
@@ -403,7 +485,8 @@ class NamePickerScreen(ModalScreen[list[str] | None]):
     """Pick one or more names (tags or projects) from a filterable list, with
     an inline "+ Create '...'" option when the typed text is new. Enter in
     the search box jumps to the list (like Shift+Tab); Enter or Tab on the
-    list marks an entry without closing, so multiple can be marked; q/Esc
+    list marks an entry without closing, so multiple can be marked (Space
+    marks too, and / goes back to the search box for the next one); q/Esc
     applies everything marked and closes."""
 
     BINDINGS = [
@@ -428,9 +511,28 @@ class NamePickerScreen(ModalScreen[list[str] | None]):
         background: $panel;
         color: $text;
     }
+    /* Pinned to the bottom of the box so it never scrolls out of view;
+       the option list scrolls on its own between the input and the hint. */
     #picker-hint {
+        dock: bottom;
+        height: auto;
         color: $text-muted;
         margin: 0 1;
+    }
+    #picker-options {
+        height: 1fr;
+    }
+    /* Neutral highlight (same as the main list): the theme's default block
+       cursor is $primary, which hides names that are colored with $primary. */
+    #picker-options > .option-list--option-highlighted {
+        color: $foreground;
+        background: #333333;
+        text-style: bold;
+    }
+    #picker-options:focus > .option-list--option-highlighted {
+        color: $foreground;
+        background: #555555;
+        text-style: bold;
     }
     """
 
@@ -443,14 +545,14 @@ class NamePickerScreen(ModalScreen[list[str] | None]):
         self._last_query = ""
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="picker-box"):
+        with Vertical(id="picker-box"):
             yield Input(
                 placeholder=f"Type to filter or create a {self._label.lower()}…",
                 id="picker-input",
             )
-            yield OptionList(id="picker-options")
+            yield PickerOptionList(id="picker-options")
             yield Static(
-                "Enter (search): jump to list · Enter/Tab (list): mark · q/Esc: apply",
+                "Enter: jump to list · Space/Enter: mark · /: search again · q/Esc: apply",
                 id="picker-hint",
             )
 
@@ -495,7 +597,9 @@ class NamePickerScreen(ModalScreen[list[str] | None]):
         if not options:
             return
 
-        target_idx = 0
+        # Start on the first existing match rather than "+ Create", so a
+        # partial query like "ext" lands on "extensional-rheology".
+        target_idx = 1 if len(options) > 1 and options[0].id.startswith("create:") else 0
         if preserve_id is not None:
             for i, opt in enumerate(options):
                 if opt.id == preserve_id:
@@ -508,6 +612,12 @@ class NamePickerScreen(ModalScreen[list[str] | None]):
 
     def action_cursor_up(self) -> None:
         self.query_one("#picker-options", OptionList).action_cursor_up()
+
+    def action_focus_search(self) -> None:
+        inp = self.query_one("#picker-input", Input)
+        inp.focus()
+        # Select the old query so typing the next search replaces it.
+        inp.select_all()
 
     def action_focus_list(self) -> None:
         ol = self.query_one("#picker-options", OptionList)
@@ -583,8 +693,9 @@ def _help_text() -> str:
                   (point it at a directory to attach every PDF inside)
   d               Delete item
   m               Add/remove item from one or more projects — opens a
-                  picker (type to filter, Shift+Tab then j/k to move,
-                  Tab to mark several, Enter to apply/create)
+                  picker (type to filter, Enter to jump to the list,
+                  j/k to move, Space/Enter to mark, / to search for
+                  the next one, q/Esc to apply)
   t               Add/remove one or more tags on the item (same picker
                   as 'm')
   c               Jump to authors view, showing only this paper's
@@ -595,8 +706,8 @@ def _help_text() -> str:
 [bold {CAT['yellow']}]Filtering & lists[/bold {CAT['yellow']}]
   Type a keyword/project name in search, Enter  Apply as filter
   Shift+Tab (in search)  Open filter picker, pre-filtered by what
-                  you typed — j/k to move, Tab to stack multiple,
-                  Enter/Esc to apply
+                  you typed — j/k to move, Space/Enter to stack
+                  multiple, / to search again, q/Esc to apply
   f               Open filter picker from the list (all entries)
   K               Edit the keyword list — deleting a name unlinks it
                   from every paper; replacing exactly one name with
@@ -605,6 +716,18 @@ def _help_text() -> str:
   M               Edit the project list (same rename/removal
                   behavior as K, above)
   x               Copy the highlighted item's BibTeX to the clipboard
+  Space           Mark/unmark the paper (marks stay while you search
+                  and filter, so you can collect papers from several
+                  searches); U unmarks all
+  S               Share: copy the marked papers' PDFs (or the
+                  highlighted one) into a new folder, renamed
+                  "Author Year - Title.pdf", plus references.bib;
+                  optionally also zipped (default yes) for email/Windows
+  l               Focus the detail panel: j/k scroll, Space/Ctrl+D
+                  page down, Ctrl+U page up, g/G top/bottom,
+                  h/q/Esc back to the list
+  y               Copy the highlighted item's PDF path to the clipboard
+                  (all paths, one per line, if it has several PDFs)
   X               Export every item in the current filtered view to a
                   .bib file (prompts for a path; blank to cancel)
 
@@ -612,7 +735,8 @@ def _help_text() -> str:
   Ctrl+S          Cycle sort order (papers: Date added -> A-Z ->
                   Publication date; authors: Profiled first -> A-Z ->
                   Most papers). Current sort shows in the status bar.
-  Ctrl+R          Refresh library from disk
+  Ctrl+R          Reset to the start view (clear search, filters,
+                  sort; back to papers) and reload from disk
   ?               This help screen
   q               Focus list / cancel (same as Escape)
   Ctrl+Q          Quit
@@ -651,6 +775,10 @@ class HelpScreen(ModalScreen[None]):
             self.query_one("#help-box", VerticalScroll).scroll_up(animate=False)
             event.stop()
             return
+        # Consume the closing key: otherwise it bubbles to the app, where
+        # escape/q trigger action_focus_list, which clears active filters.
+        event.stop()
+        event.prevent_default()
         self.dismiss(None)
 
 
@@ -723,6 +851,7 @@ class ZoteroItem:
     rights: str | None = None
     extra: str | None = None
     access_date: str | None = None
+    summary: str | None = None
     date_added: str | None = None
     to_read: bool = False
 
@@ -808,6 +937,7 @@ class ZoteroItem:
                     self.type_name,
                     self.date,
                     self.abstract,
+                    self.summary,
                     self.doi,
                     self.publisher,
                 ],
@@ -1009,6 +1139,7 @@ _AUTHOR_PROFILE_FIELDS = (
     "urls",
     "research_areas",
     "notes",
+    "known_for",
 )
 
 
@@ -1125,6 +1256,7 @@ def _author_search_text(entry: AuthorEntry) -> str:
                 (r.get("location") or "").lower(),
                 (r.get("research_areas") or "").lower(),
                 (r.get("notes") or "").lower(),
+                (r.get("known_for") or "").lower(),
             ],
         )
     )
@@ -1272,6 +1404,11 @@ def _build_author_detail(
         parts.append(f"[{label_color}]{'Website':<11}[/{label_color}] {link}")
     if r.get("notes"):
         row("Notes", r["notes"])
+    if r.get("known_for"):
+        parts.append("")
+        parts.append(f"[{label_color}]Known for[/{label_color}]")
+        for line in textwrap.wrap(" ".join(r["known_for"].split()), width=70):
+            parts.append(f"[{value_color}]{escape(line)}[/{value_color}]")
     if not entry.has_profile:
         parts.append(
             f"[{nan_color}]No profile info yet — press 'e' to fill it in[/{nan_color}]"
@@ -1320,6 +1457,7 @@ AUTHOR_EDIT_FIELDS = [
     "urls",
     "research_areas",
     "notes",
+    "known_for",
 ]
 _AUTHOR_LIST_FIELDS = {"urls", "research_areas"}
 
@@ -1427,7 +1565,41 @@ def _build_detail(item: ZoteroItem, authors_by_key: dict, canonical_map: dict) -
         pdf_status, pdf_color = None, nan_color
     row("PDF", pdf_status, color=pdf_color)
 
+    # Free-text blocks: shown in full (wrapped), unlike the truncated rows above.
+    for label, value in (("Summary", item.summary), ("Abstract", item.abstract)):
+        if value:
+            parts.append("")
+            parts.append(f"[{label_color}]{label}[/{label_color}]")
+            for line in textwrap.wrap(" ".join(value.split()), width=65):
+                parts.append(f"[{value_color}]{escape(line)}[/{value_color}]")
+
     return "\n".join(parts)
+
+
+def _safe_name(text: str, limit: int = 90) -> str:
+    """Make text safe as a file name on Linux, macOS and Windows."""
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;-")
+    return text
+
+
+def _share_filename(item: ZoteroItem) -> str:
+    """'Koeppel et al 2018 - Title', 'Smith & Jones 2001 - Title'."""
+    last = [a.split(",")[0].strip() for a in (item.authors or "").split(";") if a.strip()]
+    last = [x for x in last if x]
+    if not last:
+        who = "Unknown"
+    elif len(last) == 1:
+        who = last[0]
+    elif len(last) == 2:
+        who = f"{last[0]} & {last[1]}"
+    else:
+        who = f"{last[0]} et al"
+    m = re.search(r"\d{4}", item.date or "")
+    year = m.group(0) if m else "n.d."
+    return _safe_name(f"{who} {year} - {item.title or 'Untitled'}", limit=120)
 
 
 class ZoteroApp(App):
@@ -1485,6 +1657,10 @@ class ZoteroApp(App):
         color: $text;
     }
 
+    #detail-panel:focus {
+        border: round #9ccfd8;
+    }
+
     #detail-text {
         height: auto;
         padding: 1 2;
@@ -1502,7 +1678,7 @@ class ZoteroApp(App):
         Binding("/", "focus_search", "Search"),
         Binding("escape", "focus_list", "Browse", show=False),
         Binding("q", "focus_list", "Browse", show=False),
-        Binding("ctrl+r", "refresh", "Refresh", show=False),
+        Binding("ctrl+r", "reset", "Reset", show=False),
         Binding("question_mark", "help", "Help"),
         Binding("ctrl+q", "quit", "Quit"),
         Binding("A", "toggle_mode", "Authors ⇄ Papers"),
@@ -1524,13 +1700,16 @@ class ZoteroApp(App):
         self._filtered_authors: list[AuthorEntry] = []
         self._papers_sort: str = PAPERS_SORT_MODES[0]
         self._authors_sort: str = AUTHORS_SORT_MODES[0]
+        # Item ids marked with Space for sharing (S). Kept across searches
+        # and filters so a set can be built from several searches.
+        self._marked: set[int] = set()
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield SearchInput(placeholder="Search title, author, tag, abstract...", id="search")
         with Horizontal(id="main"):
             yield VimListView(id="item-list")
-            with VerticalScroll(id="detail-panel"):
+            with DetailPanel(id="detail-panel"):
                 yield Static("", id="detail-text")
         yield Static("Loading library...", id="status")
         yield Footer()
@@ -1870,10 +2049,32 @@ class ZoteroApp(App):
         self._set_status("Refreshing library…")
         self._load_library()
 
+    def action_reset(self) -> None:
+        """Go back to the start-up view: papers mode, no search, no filters,
+        default sort, reloaded from disk, cursor on the first paper."""
+        if self._search_timer is not None:
+            self._search_timer.stop()
+            self._search_timer = None
+        self._mode = "papers"
+        self._active_filters = []
+        self._marked.clear()
+        self._papers_sort = PAPERS_SORT_MODES[0]
+        self._authors_sort = AUTHORS_SORT_MODES[0]
+        search = self.query_one("#search", Input)
+        with search.prevent(Input.Changed):
+            search.value = ""
+        lv = self.query_one("#item-list", VimListView)
+        lv.highlighted = None
+        lv.focus()
+        lv.refresh_bindings()
+        self._update_subtitle()
+        self._set_status("Reset to start view · reloading library…")
+        self._load_library()
+
     def _rebuild_list(self) -> None:
         lv = self.query_one("#item-list", VimListView)
         lv.clear_options()
-        lv.add_options([item.list_markup() for item in self._filtered])
+        lv.add_options([self._item_markup(item) for item in self._filtered])
         if self._filtered and (
             lv.highlighted is None or lv.highlighted >= len(self._filtered)
         ):
@@ -2093,7 +2294,7 @@ class ZoteroApp(App):
 
         for attr, new_value in changes.items():
             setattr(item, attr, new_value)
-        lv.replace_option_prompt_at_index(idx, item.list_markup())
+        lv.replace_option_prompt_at_index(idx, self._item_markup(item))
         self._show_detail(item)
         self._set_status(f"Saved: {', '.join(changes)}")
 
@@ -2265,7 +2466,7 @@ class ZoteroApp(App):
         if not item.has_pdf and first_dest is not None:
             db_module.update_item_fields(item.item_id, {"pdf_path": str(first_dest)})
             item.pdf_path = first_dest
-            lv.replace_option_prompt_at_index(idx, item.list_markup())
+            lv.replace_option_prompt_at_index(idx, self._item_markup(item))
 
         if len(attached_names) == 1:
             self._set_status(f"Attached: {attached_names[0]} -> {item.title}")
@@ -2317,7 +2518,7 @@ class ZoteroApp(App):
         item = self._filtered[idx]
         item.to_read = not item.to_read
         db_module.update_item_fields(item.item_id, {"to_read": int(item.to_read)})
-        lv.replace_option_prompt_at_index(idx, item.list_markup())
+        lv.replace_option_prompt_at_index(idx, self._item_markup(item))
         self._show_detail(item)
         verb = "Added to" if item.to_read else "Removed from"
         self._set_status(f"{verb} reading queue: {item.title}")
@@ -2415,7 +2616,7 @@ class ZoteroApp(App):
         db_module.update_item_fields(item.item_id, {"tags": item.tags})
         lv = self.query_one("#item-list", VimListView)
         if 0 <= idx < len(self._filtered) and self._filtered[idx] is item:
-            lv.replace_option_prompt_at_index(idx, item.list_markup())
+            lv.replace_option_prompt_at_index(idx, self._item_markup(item))
         self._show_detail(item)
 
         parts = []
@@ -2469,6 +2670,154 @@ class ZoteroApp(App):
         self.copy_to_clipboard(bibtex_text)
         short_title = _truncate(item.title, width=40)
         self._set_status(f"Copied BibTeX to clipboard: {short_title}")
+
+    def _item_markup(self, item: ZoteroItem) -> str:
+        if item.item_id in self._marked:
+            return f"[bold {CAT['green']}]●[/bold {CAT['green']}] " + item.list_markup()
+        return item.list_markup()
+
+    def _marked_status(self) -> str:
+        n = len(self._marked)
+        return f"{n} marked · S: share as folder of PDFs · U: unmark all" if n else "No papers marked"
+
+    def action_mark_item(self) -> None:
+        if not self._require_papers_mode():
+            return
+        lv = self.query_one("#item-list", VimListView)
+        idx = lv.highlighted
+        if idx is None or not (0 <= idx < len(self._filtered)):
+            return
+        item = self._filtered[idx]
+        self._marked ^= {item.item_id}
+        lv.replace_option_prompt_at_index(idx, self._item_markup(item))
+        if idx + 1 < len(self._filtered):
+            lv.highlighted = idx + 1
+        self._set_status(self._marked_status())
+
+    def action_clear_marks(self) -> None:
+        self._marked.clear()
+        if self._mode == "papers":
+            self._rebuild_list()
+        self._set_status(self._marked_status())
+
+    def action_share_marked(self) -> None:
+        """Copy the PDFs of the marked papers (or the highlighted one if none
+        are marked) into a new folder, renamed "Author Year - Title.pdf",
+        with a references.bib next to them."""
+        if not self._require_papers_mode():
+            return
+        if self._marked:
+            items = [it for it in self._items if it.item_id in self._marked]
+        else:
+            lv = self.query_one("#item-list", VimListView)
+            idx = lv.highlighted
+            if idx is None or not (0 <= idx < len(self._filtered)):
+                return
+            items = [self._filtered[idx]]
+
+        default = Path("~/Downloads") / f"papers-{_date.today().isoformat()}"
+        answer = ""
+        zip_answer = ""
+        try:
+            with self.suspend():
+                try:
+                    answer = input(
+                        f"Share {len(items)} paper(s): folder to create "
+                        f"[Enter = {default}, q = cancel]: "
+                    ).strip()
+                    if answer.lower() != "q":
+                        zip_answer = input(
+                            "Also make a .zip of it (opens natively on Windows/macOS)? [Y/n]: "
+                        ).strip().lower()
+                except EOFError:
+                    answer = "q"
+        except SuspendNotSupported:
+            self.notify("Sharing isn't supported in this terminal environment", severity="error")
+            return
+        if answer.lower() == "q":
+            self._set_status("Share cancelled")
+            return
+        out_dir = Path(answer or str(default)).expanduser()
+        if out_dir.exists() and any(out_dir.iterdir()):
+            base, n = out_dir, 2
+            while out_dir.exists() and any(out_dir.iterdir()):
+                out_dir = base.with_name(f"{base.name}-{n}")
+                n += 1
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        copied, missing = 0, []
+        used: set[str] = set()
+        for item in items:
+            pdfs = db_module.list_item_pdfs(item.item_id)
+            if len(pdfs) > 1:
+                sources = [(Path(p).expanduser(), label) for p, label in pdfs]
+            elif item.pdf_path is not None:
+                sources = [(item.pdf_path, None)]
+            else:
+                sources = [(Path(p).expanduser(), label) for p, label in pdfs]
+            sources = [(p, lab) for p, lab in sources if p.exists()]
+            if not sources:
+                missing.append(item.title or "(untitled)")
+                continue
+            stem = _share_filename(item)
+            for i, (src, label) in enumerate(sources):
+                name = stem if len(sources) == 1 else f"{stem} ({_safe_name(label or '') or i + 1})"
+                final, k = name, 2
+                while final.lower() in used:
+                    final = f"{name} {k}"
+                    k += 1
+                used.add(final.lower())
+                shutil.copy2(src, out_dir / f"{final}.pdf")
+                copied += 1
+
+        (out_dir / "references.bib").write_text(items_to_bibtex(items))
+        if missing:
+            (out_dir / "MISSING_PDFS.txt").write_text(
+                "No PDF in the library for:\n" + "\n".join(f"- {t}" for t in missing) + "\n"
+            )
+        shared_path = out_dir
+        if zip_answer not in ("n", "no"):
+            # Zip next to the folder, with the folder as the top-level entry
+            # so it unpacks into one folder rather than loose files.
+            shared_path = Path(
+                shutil.make_archive(str(out_dir), "zip", root_dir=out_dir.parent, base_dir=out_dir.name)
+            )
+        self.copy_to_clipboard(str(shared_path))
+        self._marked.clear()
+        self._rebuild_list()
+        msg = f"Shared {copied} PDF(s) to {shared_path} (path copied)"
+        if missing:
+            msg += f" · {len(missing)} paper(s) had no PDF, see MISSING_PDFS.txt"
+        self._set_status(msg)
+
+    def action_copy_pdf_path(self) -> None:
+        """Copy the highlighted item's PDF path to the clipboard. Items with
+        several PDFs get every path, one per line, in the same order as the
+        Enter chooser."""
+        if not self._require_papers_mode():
+            return
+        lv = self.query_one("#item-list", VimListView)
+        idx = lv.highlighted
+        if idx is None or not (0 <= idx < len(self._filtered)):
+            return
+        item = self._filtered[idx]
+        # Same rule as opening (Enter): the item_pdfs list when there are
+        # several, otherwise the main pdf_path.
+        pdfs = db_module.list_item_pdfs(item.item_id)
+        if len(pdfs) > 1:
+            paths = [str(Path(p).expanduser()) for p, _ in pdfs]
+        elif item.pdf_path is not None:
+            paths = [str(item.pdf_path)]
+        else:
+            paths = [str(Path(p).expanduser()) for p, _ in pdfs]
+        if not paths:
+            self.notify("No PDF attached for this item", severity="warning")
+            return
+        self.copy_to_clipboard("\n".join(paths))
+        if len(paths) == 1:
+            self._set_status(f"Copied PDF path: {paths[0]}")
+        else:
+            self._set_status(f"Copied {len(paths)} PDF paths (one per line)")
 
     def action_edit_keywords(self) -> None:
         ensure_keywords_file()

@@ -50,6 +50,7 @@ ITEM_COLUMNS = [
     "rights",
     "extra",
     "access_date",
+    "summary",
 ]
 
 
@@ -137,7 +138,15 @@ def init_db(db_path: Path | None = None) -> None:
         except sqlite3.OperationalError:
             pass  # column already exists
         try:
+            con.execute("ALTER TABLE items ADD COLUMN summary TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        try:
             con.execute("ALTER TABLE authors ADD COLUMN canonical_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        try:
+            con.execute("ALTER TABLE authors ADD COLUMN known_for TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
         con.commit()
