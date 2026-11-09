@@ -1,0 +1,82 @@
+[[group]]
+id = "john-bechhoefer"
+name = "John Bechhoefer"
+lab = "John Bechhoefer's research group"
+urls = ["https://www.sfu.ca/chaos/"]
+university = "Simon Fraser University"
+location = "Burnaby, British Columbia, Canada"
+research_areas = ["Nonlinear dynamics", "Control theory", "Statistical physics"]
+department = "Physics"
+
+[[group]]
+id = "safa-jamali"
+name = "Safa Jamali"
+notes = "I met him (online) at 'The Hitchhiker's Guide to Rheology: Final Session of the Spring 2025 Edition - Special Class with Safa Jamali - July 15' and asked him about GPR for rheology machine learning."
+lab = "Rheoinformatic Lab"
+urls = ["https://coe.northeastern.edu/people/jamali-safa/", "https://rheoinformatic.com/"]
+university = "Northeastern University"
+location = "Boston, Massachusetts, USA"
+research_areas = ["Rheology", "Soft matter", "Machine learning"]
+department = "Mechanical and Industrial Engineering"
+
+[[group]]
+id = "gareth-mckinley"
+name = "Gareth McKinley"
+lab = "Non-Newtonian Fluid Dynamics Group"
+urls = ["https://nnf.mit.edu/"]
+university = "Massachusetts Institute of Technology"
+location = "Cambridge, Massachusetts, USA"
+research_areas = ["Non-Newtonian fluid mechanics", "Complex fluids", "Rheology"]
+department = "Mechanical Engineering"
+
+[[group]]
+id = "vivek-sharma"
+name = "Vivek Sharma"
+lab = "Vivel Sharma's Soft Matter ODES-lab"
+urls = ["https://viveksharmalab.com/"]
+university = "University of Illinois Chicago"
+location = "Chicago, Illinois, USA"
+research_areas = ["Soft matter", "Polymer physics", "Rheology", "Interfacial science"]
+department = "Chemical Engineering"
+
+[[group]]
+id = "giovanniantoni-natale"
+name = "Giovanniantoni Natale"
+email = "gnatale@ucalgary.ca"
+urls = ["https://profiles.ucalgary.ca/giovanniantonio-natale"]
+university = "Universith of Calgary"
+location = "Calgary"
+research_areas = ["Jannus Particles"]
+department = "Chemical and Petroleum Engineering"
+notes = "Gave an interesting presentation at CSME conference on Jannus particles"
+
+[[group]]
+id = "john-m-frostad"
+name = "John M. Frostad"
+email = "john.frostad@ubc.ca"
+urls = ["https://food.chbe.ubc.ca"]
+university = "UBC"
+location = "BC Canada"
+department = "Chem and Bio Engineering"
+notes = "He have lots of good suggestions after chairing my presentation at CSME 2026"
+
+[[group]]
+id = "ian-frigaard"
+name = "Ian Frigaard"
+lab = "Complex Fluids Lab"
+urls = ["https://complex.mech.ubc.ca/"]
+university = "UBC"
+location = "British Columbia"
+department = "Math and Eng"
+notes = "Attending their talk as CSME 2026, talked to them after and suggested a way to get entropy from the image of mixing fluids."
+
+[[group]]
+name = "template"
+email = ""
+lab = ""
+urls = [""]
+university = ""
+location = ""
+research_areas = [""]
+department = ""
+notes = ""
