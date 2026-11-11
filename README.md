@@ -1,48 +1,102 @@
-### Project Goal
-* The main project goal is to replace the front end of Zotero with a terminal user interface.
-* Zotero uses sqlite to store metadata for each paper.
-* The main thing I need to do is build a tool which allows me to search through the database.
+# rz (rip zotero)
 
-## C++ version (`rz`)
+A fast, keyboard-driven terminal app for your Zotero library.
 
-The app is written in C++ with [FTXUI](https://github.com/ArthurSonzogni/FTXUI), the same way as crate.
-It looks and works the same as the earlier Python/Textual version, and uses the same data in
-`~/.local/share/rip-zotero` (library.sqlite, storage/, keywords.txt, projects.txt).
+Zotero keeps everything (papers, authors, tags, collections) in a SQLite database. `rz` imports
+that library and gives you a terminal UI to search, filter, tag and open your papers, without
+running the Zotero desktop app.
 
-### Dependencies (Arch)
+## Features
+
+- **Instant search** across your whole library, with vim-style navigation (`j`/`k`, `g`/`G`, `/`)
+- **Tags and projects**: tag papers and group them into projects, then stack filters to narrow things down
+- **Authors view**: browse by author, see each author's co-authors, and keep notes on research groups
+- **Reading queue**: star the papers you want to read next
+- **BibTeX**: add papers from BibTeX, copy one entry, or export a whole filtered view to a `.bib` file
+- **Sharing**: collect papers from several searches and export them as neatly renamed PDFs plus a
+  `references.bib`, optionally zipped for email
+- **Open PDFs** in zathura with a single key
+
+## Installation
+
+These steps are for Arch Linux, but any distro with the same packages will work.
+
+### 1. Install dependencies
 
 ```bash
-# needed to build
+# to build
 sudo pacman -S --needed base-devel cmake git pkgconf sqlite
 
-# needed at runtime
+# to run
 sudo pacman -S --needed zathura xdg-utils wl-clipboard zip
 ```
 
-- `zathura` opens PDFs, `xdg-open` opens author websites.
-- `wl-copy` (wl-clipboard) is used for the clipboard on Wayland; elsewhere the terminal's clipboard (OSC 52) is used.
-- `zip` makes the .zip when sharing papers (`S`).
+| Package        | Used for                                                              |
+| -------------- | --------------------------------------------------------------------- |
+| `zathura`      | Opening PDFs                                                          |
+| `xdg-utils`    | Opening author websites in your browser                               |
+| `wl-clipboard` | Clipboard on Wayland (other setups use the terminal's OSC 52 clipboard) |
+| `zip`          | Zipping shared papers                                                 |
 
-FTXUI and toml++ aren't installed with pacman. CMake downloads them the first time you configure, which needs an internet connection.
+You don't need to install [FTXUI](https://github.com/ArthurSonzogni/FTXUI) or
+[toml++](https://github.com/marzer/tomlplusplus) yourself. CMake downloads them the first time you build,
+so you'll need an internet connection for that step.
 
-### Building
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release   # configure: creates build/ and fetches FTXUI + toml++
-cmake --build build -j                      # compile: produces build/rz
-```
-
-After changes, only the second command is needed. To start fresh, `rm -rf build` and run both again.
-
-### Putting it on your PATH
+### 2. Build
 
 ```bash
-ln -s ~/code/rip-zotero/build/rz ~/.local/bin/rz
+git clone https://github.com/gkerr708/rz.git
+cd rz
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ```
 
-### Usage
+This produces `build/rz`. After pulling changes, rebuild with just `cmake --build build -j`.
+If a build ever gets into a bad state, `rm -rf build` and run both commands again.
+
+### 3. Put it on your PATH
 
 ```bash
-rz            # browse the library (press ? for keys)
-rz migrate    # import ~/Zotero (zotero.sqlite + storage/) into the library
+ln -s "$PWD/build/rz" ~/.local/bin/rz
 ```
+
+## Getting started
+
+Import your existing Zotero library (from `~/Zotero`), then launch the app:
+
+```bash
+rz migrate    # one-time import of ~/Zotero (zotero.sqlite + storage/)
+rz            # open your library
+```
+
+Press **`?`** inside the app to see every shortcut. Here are the essentials:
+
+| Key        | Action                                  |
+| ---------- | --------------------------------------- |
+| `j` / `k`  | Move down / up                          |
+| `/`        | Search                                  |
+| `Enter`    | Open the paper's PDF                    |
+| `o`        | Show the detail panel                   |
+| `a`        | Add a paper from BibTeX                 |
+| `e`        | Edit a paper in `$EDITOR`               |
+| `t` / `m`  | Tag a paper / add it to a project       |
+| `f`        | Filter by tag or project                |
+| `r` / `R`  | Add to reading queue / show the queue   |
+| `Space`    | Mark papers, then `S` to share them     |
+| `x`        | Copy BibTeX to the clipboard            |
+| `Shift+A`  | Switch between papers and authors views |
+| `q`        | Quit                                    |
+
+## Where your data lives
+
+`rz` never changes your original Zotero library. `rz migrate` copies it into its own folder:
+
+```
+~/.local/share/rip-zotero/
+├── library.sqlite   # papers, authors, tags, projects
+├── storage/         # PDFs
+├── keywords.txt     # your tag list
+└── projects.txt     # your project list
+```
+
+To back up your library or move it to another machine, copy that folder.
