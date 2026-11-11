@@ -10,7 +10,7 @@
 //   │ * Smith & Jones (2001) Title…     ││  Title                    │
 //   ╰──────────────────────────────────╯╰──────────────────────────╯
 //    status line
-//   ⏎ Open PDF / Back to Papers  ^q Quit  / Search  ? Help  A Authors ⇄ Papers
+//   ⏎ Open PDF / Back to Papers  q Quit  / Search  ? Help  A Authors ⇄ Papers
 //
 // How it fits together:
 //   db.cpp      - the SQLite library: papers, PDFs, projects, author profiles
@@ -1691,7 +1691,6 @@ struct App {
             if (help_open) return on_help_key(e);
             if (picker) return on_picker_key(e);
             // App-wide keys no widget uses.
-            if (e == Event::CtrlQ) return screen.Exit(), true;
             if (e == Event::CtrlR) return reset(), true;
             if (e == Event::CtrlS) return cycle_sort(), true;
             if (focus == Area::Search) return on_search_key(e);
@@ -1710,7 +1709,8 @@ struct App {
         if (c == "/") focus = Area::Search;
         else if (c == "?") help_open = true, help_scroll = 0;
         else if (c == "A") toggle_mode();
-        else if (e == Event::Escape || c == "q") focus_list();
+        else if (c == "q") screen.Exit();
+        else if (e == Event::Escape) focus_list();
         else if (e == Event::Tab) focus = focus == Area::List ? Area::Detail : Area::Search;
         else if (e == Event::TabReverse) focus = focus == Area::Detail ? Area::List : Area::Search;
         else return false;
@@ -1740,7 +1740,7 @@ struct App {
         else if (e == Event::CtrlU || e == Event::PageUp) scroll_to(detail_scroll - detail_page);
         else if (c == "g" || e == Event::Home) scroll_to(0);
         else if (c == "G" || e == Event::End) scroll_to(detail_max);
-        else if (c == "h" || c == "q" || e == Event::Escape) focus = Area::List;  // filters stay
+        else if (c == "h" || e == Event::Escape) focus = Area::List;  // filters stay
         else return false;
         return true;
     }
@@ -1975,7 +1975,7 @@ struct App {
         hints.clear();
         if (focus == Area::List) hints.push_back({"⏎", "Open PDF / Back to Papers", [this] { on_list_key(Event::Return); }});
         if (focus == Area::Detail) hints.push_back({"h", "Back to list", [this] { focus = Area::List; }});
-        hints.push_back({"^q", "Quit", [this] { screen.Exit(); }});
+        hints.push_back({"q", "Quit", [this] { screen.Exit(); }});
         hints.push_back({"/", "Search", [this] { focus = Area::Search; }});
         if (focus != Area::Search) {
             hints.push_back({"?", "Help", [this] { help_open = true, help_scroll = 0; }});
@@ -2179,8 +2179,7 @@ struct App {
   Ctrl+R          Reset to the start view (clear search, filters,
                   sort; back to papers) and reload from disk
   ?               This help screen
-  q               Focus list / cancel (same as Escape)
-  Ctrl+Q          Quit
+  q               Quit
 
 Press any key to close.
 )";
